@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
+#define DEBUG 1
 #ifdef DEBUG
 #pragma message "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
 #pragma message "RTP Chunkiser compiling in debug mode"
@@ -36,7 +37,6 @@
 #else
 #include "rtp_rtcp.h"
 #endif
-
 #ifndef DEBUG
 #define NDEBUG
 #endif
@@ -87,13 +87,13 @@ struct chunkiser_ctx {
   int fds_len;  // even if "-1"-terminated, save length to make things easier
   struct rtp_stream streams[RTP_STREAMS_NUM_MAX];  // its len is fds_len/2
   // running context (set at chunkising time)
-  uint8_t *buff;          // chunk buffer
-  int size;               // its current size
+  uint8_t *buff[3];       //pointers to buffers for spatial layers
+  int size[3];            //sizes of each buffer
   int next_fd;            // next fd (index in fsd array) to be tried (in a round-robin)
   int counter;            // number of chunks sent
-  uint64_t min_ntp_ts;    // ntp timestamp of first packet in chunk
-  uint64_t max_ntp_ts;    // ntp timestamp of last packet in chunk
-  int ntp_ts_status;      // known (1), yet unkwnown (0) or unknown (-1)
+  uint64_t min_ntp_ts[3];    // ntp timestamp of first packet in chunk
+  uint64_t max_ntp_ts[3];    // ntp timestamp of last packet in chunk
+  int ntp_ts_status[3];      // known (1), yet unkwnown (0) or unknown (-1)
 };
 
 /* Holds relevant information extracted from each RTP packet */
@@ -101,6 +101,7 @@ struct rtp_info {
   uint16_t valid;
   uint16_t marker;
   uint64_t ntp_ts;
+  uint64_t spatial_layer_id;
 };
 
 uint64_t gettimeofday_in_microseconds(void)
@@ -238,6 +239,7 @@ static int rtplib_init(struct chunkiser_ctx *ctx) {
   rtcp_s.clock_rate = 1;  // Just to avoid Floating point exception
 #else
   printf_log(ctx, 2, "RTP internal implementation initialized (PJSIP not used)");
+  printf_log(ctx,2,"Value : %d",ctx->fds_len);
 #endif /* PJLIB_RTP */
 
   for (i=0; i<ctx->fds_len/2; i++) {
@@ -255,6 +257,29 @@ static int rtplib_init(struct chunkiser_ctx *ctx) {
   return 0;
 }
 
+//Draft: maybe move this function in a separate file
+// returns SID value from VP9 payolad descriptor
+int get_vp9_spatial_layer(uint8_t *pkt)
+{
+  uint8_t * descriptor_ptr,flags;
+  descriptor_ptr = pkt + sizeof(struct rtp_hdr);
+  descriptor_ptr += sizeof(uint32_t);
+  
+  flags = *descriptor_ptr;
+  //check for L (layering) flag in descriptor 
+  if(flags & (1 << 6))
+  {
+    uint8_t layers = *(descriptor_ptr + sizeof(uint16_t) + 8);
+    uint8_t sid_value = layers & 14;
+    sid_value = sid_value >> 1;       //remove D bit from byte
+    return sid_value;
+  }
+  else
+  {
+    //no layering in this packet;
+    return -1;
+  }
+}
 
 /* Inspects the given RTP packet and fills `info` accordingly. */
 static void rtp_packet_received(struct chunkiser_ctx *ctx, int stream_id, uint8_t *pkt, int size, struct rtp_info *info) {
@@ -300,6 +325,10 @@ static void rtp_packet_received(struct chunkiser_ctx *ctx, int stream_id, uint8_
     printf_log(ctx, 1, "Warning: got invalid RTP packet (forwarding anyway).");
     info->valid = 0;
   }
+
+  //TODO: get correct layer
+    //info->spatial_layer_id = get_vp9_spatial_layer(pkt);
+  info->spatial_layer_id = 0;
 }
 
 
@@ -521,8 +550,6 @@ static struct chunkiser_ctx *rtp_open(const char *fname, int *period, const char
     free(res);
     return NULL;
   }
-  printf_log(res, 2, "Parameter parsing was successful.");
-
   if (rtplib_init(res) != 0) {
     free(res);
     return NULL;
@@ -532,11 +559,17 @@ static struct chunkiser_ctx *rtp_open(const char *fname, int *period, const char
   res->start_time = tv.tv_usec + tv.tv_sec * 1000000ULL;
   res->latest_ts = gettimeofday_in_microseconds();
 
-  res->buff = NULL;
-  res->size = 0;
+  res->buff[0] = NULL;
+  res->buff[1] = NULL;
+  res->buff[2] = NULL;
+  res->size[0] = 0;
+  res->size[1] = 0;
+  res->size[2] = 0;
   res->counter = 0;
   res->next_fd = 0;
-  res->ntp_ts_status = 0;
+  res->ntp_ts_status[0] = 0;
+  res->ntp_ts_status[1] = 0;
+  res->ntp_ts_status[2] = 0;
   *period = 0;
 
   return res;
@@ -547,7 +580,9 @@ static void rtp_close(struct chunkiser_ctx  *ctx) {
   int i;
 
   if (ctx->buff != NULL) {
-    free(ctx->buff);
+    free(ctx->buff[0]);
+    free(ctx->buff[1]);
+    free(ctx->buff[2]);
   }
   for (i = 0; ctx->fds[i] >= 0; i++) {
     close(ctx->fds[i]);
@@ -572,69 +607,111 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
                //  0: Go on, do not send;
                //  1: send after loop;
                //  2: do one more round-robin loop now
-  int j;
+  int j , buffer_to_use;
   uint8_t *res;
+  uint8_t *pkt_rcvd;
+  uint8_t*new_pkt_start;
   
   *ts = gettimeofday_in_microseconds();
 
   // Allocate new buffer if needed
-  if (ctx->buff == NULL) {
-    ctx->buff = malloc(ctx->max_size);
-    ctx->ntp_ts_status = 0;
-    if (ctx->buff == NULL) {
+  if (ctx->buff[0] == NULL) {
+    ctx->buff[0] = malloc(ctx->max_size);
+    ctx->buff[1] = malloc(ctx->max_size);
+    ctx->buff[2] = malloc(ctx->max_size);
+    ctx->ntp_ts_status[0] = 0;
+    ctx->ntp_ts_status[1] = 0;
+    ctx->ntp_ts_status[2] = 0;
+    if (ctx->buff[0] == NULL || ctx->buff[1] == NULL || ctx->buff[2] == NULL) {
       printf_log(ctx, 0, "Could not alloccate chunk buffer: exiting.");
       *size = -1;
       return NULL;
     }
   }
+  pkt_rcvd = malloc(UDP_MAX_SIZE);
+  //draft; this index is a bit dangerous, re-check the assigment if possible
+  //-1 so if we exit too early we get a segfault. Check if this makes sense
+  buffer_to_use = -1;
   do {
     status = 0;
     // Check open ports for incoming UDP packets in a round-robin
     for (j = 0; j < ctx->fds_len && status >= 0; j++) {
       int i = (ctx->next_fd + j) % ctx->fds_len;
-      int new_pkt_size;
-      uint8_t *new_pkt_start =
-        ctx->buff + ctx->size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
-      struct rtp_info info;
 
-      assert((ctx->max_size - ctx->size)
-             >= (UDP_MAX_SIZE + RTP_PAYLOAD_PER_PKT_HEADER_SIZE));
 
-      new_pkt_size = input_get_udp(new_pkt_start, ctx->fds[i]);
-      if (new_pkt_size) {
+      int pkt_rcvd_size;
+      pkt_rcvd_size = input_get_udp(pkt_rcvd, ctx->fds[i]);
+      printf_log(ctx,2,"Input_get_udp result is : %d",pkt_rcvd_size);
+
+      if (pkt_rcvd_size) {
         printf_log(ctx, 2, "Got UDP message of size %d from port id #%d",
-                   new_pkt_size, i);
+                   pkt_rcvd_size, i);
         if (i % 2 == 0) {  // RTP packet
-          rtp_packet_received(ctx, i/2, new_pkt_start, new_pkt_size, &info);
+          struct rtp_info info;
+          rtp_packet_received(ctx, i/2, pkt_rcvd, pkt_rcvd_size, &info);
           if (info.valid) {
             printf_log(ctx, 2, "  packet has NTP timestamp (seconds) %llu",
                        info.ntp_ts >> TS_SHIFT);
             if (ctx->rtp_log) {
-              fprintf(stderr, "[RTP_LOG] timestamp=%lu size=%d port_id=%d\n", info.ntp_ts, new_pkt_size, i);
+              fprintf(stderr, "[RTP_LOG] timestamp=%lu size=%d port_id=%d\n", info.ntp_ts, pkt_rcvd_size, i);
             }
+
+            //subdivide the spatial layers (0-7) into 3 buffers. will improve this part a bit
+            if(info.spatial_layer_id == 0)
+            {
+              buffer_to_use = 0;
+            }
+            else if(info.spatial_layer_id <= 2 )
+            {
+              buffer_to_use = 1;
+            }
+            else
+            {
+              buffer_to_use = 2;
+            }
+
+            if(buffer_to_use < 0)
+            {
+              printf_log(ctx,1,"you gummed up the index, you idiot.");
+              return 0;
+            }
+
+            printf_log(ctx,1,"Buffer to use is %d",buffer_to_use);
+
+            assert((ctx->max_size - ctx->size[buffer_to_use])
+                   >= (UDP_MAX_SIZE + RTP_PAYLOAD_PER_PKT_HEADER_SIZE));
+
+            //the correct buffer to use is only known when rtp_info has been filled
+            new_pkt_start =
+              ctx->buff[buffer_to_use] + ctx->size[buffer_to_use] + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
+
+            //copy pckt_rcvd in the place of new_pkt_start, otherwise we lose pckt on next iteration
+            memcpy(new_pkt_start,pkt_rcvd,pkt_rcvd_size);
+
             // update chunk timestamp
             if (info.ntp_ts == 0ULL) {
               // packet with unknown ts, ignore all timestamps
-              ctx->ntp_ts_status = -1;
+              ctx->ntp_ts_status[buffer_to_use] = -1;
             }
-            if (ctx->ntp_ts_status >= 0) {
-              switch (ctx->ntp_ts_status) {
+            if (ctx->ntp_ts_status[buffer_to_use] >= 0) {
+              switch (ctx->ntp_ts_status[buffer_to_use]) {
               case 0:
-                ctx->min_ntp_ts = info.ntp_ts;
-                ctx->max_ntp_ts = info.ntp_ts;
-                ctx->ntp_ts_status = 1;
+                ctx->min_ntp_ts[buffer_to_use] = info.ntp_ts;
+                ctx->max_ntp_ts[buffer_to_use] = info.ntp_ts;
+                ctx->ntp_ts_status[buffer_to_use] = 1;
                 break;
               case 1:
-                ctx->min_ntp_ts = ts_min(ctx->min_ntp_ts, info.ntp_ts);
-                ctx->max_ntp_ts = ts_max(ctx->max_ntp_ts, info.ntp_ts);
+                ctx->min_ntp_ts[buffer_to_use] = ts_min(ctx->min_ntp_ts[buffer_to_use], info.ntp_ts);
+                ctx->max_ntp_ts[buffer_to_use] = ts_max(ctx->max_ntp_ts[buffer_to_use], info.ntp_ts);
                 break;
               }
-              if ((ctx->max_ntp_ts - ctx->min_ntp_ts) >= ctx->max_delay) {
+              if ((ctx->max_ntp_ts[buffer_to_use] - ctx->min_ntp_ts[buffer_to_use]) >= ctx->max_delay ) {
                 printf_log(ctx, 2, "  Max delay reached: %.0f over %.0f ms",
                            (ctx->max_ntp_ts - ctx->min_ntp_ts) * 1000.0 / (1ULL << TS_SHIFT),
                            ctx->max_delay * 1000.0 / (1ULL << TS_SHIFT));
                 status = ((status > 1) ? status : 1); // status = max(status, 1)
               }
+
             } else  {// consider last generated chunk timestamp
               //fprintf(stderr, "[DEBUG] now %"PRIu64", then %"PRIu64", maxdelay %f\n", *ts, ctx->latest_ts, ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
               if ((*ts - ctx->latest_ts) >= (ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT)))
@@ -649,13 +726,15 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           }
         }
         else {  // RTCP packet
-          rtcp_packet_received(ctx, i/2, new_pkt_start, new_pkt_size);
+          rtcp_packet_received(ctx, i/2, pkt_rcvd, pkt_rcvd_size);
         }
         // append packet to chunk
-        rtp_payload_per_pkt_header_set(ctx->buff + ctx->size, new_pkt_size, i);
-        ctx->size += new_pkt_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
-        if ((ctx->max_size - ctx->size)
+        //draft; add rtp payload header to the correct buffer
+        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, i);
+        ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
+
+        if ((ctx->max_size - ctx->size[buffer_to_use])
             < (UDP_MAX_SIZE + RTP_PAYLOAD_PER_PKT_HEADER_SIZE)
             ) {  // Not enough space left in buffer: send chunk
           printf_log(ctx, 2, "Buffer size reached: (%d over %d - max %d)",
@@ -667,17 +746,18 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
     }
   } while (status >= 2);
 
-  if (status == 0) {
+  if (status == 0 || buffer_to_use < 0) {
     *size = 0;
     res = NULL;
   }
   else {
-    res = ctx->buff;
-    *size = ctx->size;
+    res = ctx->buff[buffer_to_use];
+    *size = ctx->size[buffer_to_use];
     ctx->counter++;
     ctx->latest_ts = *ts;
-    ctx->buff = NULL;
-    ctx->size = 0;
+    //ctx->buff[buffer_to_use] = NULL;
+    ctx->size[buffer_to_use] = 0;
+    free(pkt_rcvd);           //free area used as temporary storage for vp9 frames
     printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli", *size, *ts);
   }
 

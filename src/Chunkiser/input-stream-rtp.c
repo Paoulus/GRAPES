@@ -326,7 +326,7 @@ static void rtp_packet_received(struct chunkiser_ctx *ctx, int stream_id, uint8_
     info->valid = 0;
   }
 
-  //TODO: get correct layer
+  //TODO: set correct layer by reading vp9 header
     //info->spatial_layer_id = get_vp9_spatial_layer(pkt);
   info->spatial_layer_id = 0;
 }
@@ -615,7 +615,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
   *ts = gettimeofday_in_microseconds();
 
   // Allocate new buffer if needed
-  if (ctx->buff[0] == NULL) {
+  if (ctx->buff[0] == NULL || ctx->buff[1] == NULL || ctx->buff[2] == NULL) {
     ctx->buff[0] = malloc(ctx->max_size);
     ctx->buff[1] = malloc(ctx->max_size);
     ctx->buff[2] = malloc(ctx->max_size);
@@ -728,10 +728,11 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
         else {  // RTCP packet
           rtcp_packet_received(ctx, i/2, pkt_rcvd, pkt_rcvd_size);
         }
-        // append packet to chunk
-
-        //draft; add rtp payload header to the correct buffer
-        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, i);
+        
+        //NOTE:
+        //we are (probably) passing the wrong arguments to rtp_payolad_per_pkt_header_set.
+        //that's why we get a mem corruption warning and we dump core.
+        rtp_payload_per_pkt_header_set(new_pkt_start, pkt_rcvd_size, i);
         ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
         if ((ctx->max_size - ctx->size[buffer_to_use])
@@ -755,7 +756,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
     *size = ctx->size[buffer_to_use];
     ctx->counter++;
     ctx->latest_ts = *ts;
-    //ctx->buff[buffer_to_use] = NULL;
+    ctx->buff[buffer_to_use] = NULL;
     ctx->size[buffer_to_use] = 0;
     free(pkt_rcvd);           //free area used as temporary storage for vp9 frames
     printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli", *size, *ts);

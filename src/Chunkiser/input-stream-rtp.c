@@ -57,6 +57,9 @@
 #define RTP_DEFAULT_CHUNK_SIZE 65536
 #define RTP_DEFAULT_MAX_DELAY (1ULL << (TS_SHIFT-2))  // 250 ms
 
+#define VP9_SID_MASK (16)
+#define VP9_SID_OFFSET (1)
+
 struct rtp_ntp_ts {
   // both in HOST byte order
   uint64_t ntp;
@@ -101,7 +104,7 @@ struct rtp_info {
   uint16_t valid;
   uint16_t marker;
   uint64_t ntp_ts;
-  uint64_t spatial_layer_id;
+  uint8_t spatial_layer_id;
 };
 
 uint64_t gettimeofday_in_microseconds(void)
@@ -257,27 +260,25 @@ static int rtplib_init(struct chunkiser_ctx *ctx) {
   return 0;
 }
 
-//Draft: maybe move this function in a separate file
-// returns SID value from VP9 payolad descriptor
-int get_vp9_spatial_layer(uint8_t *pkt)
+//read RTP payload and return 
+//SID value from VP9 payolad descriptor
+uint8_t get_vp9_spatial_layer(const void *payload)
 {
-  uint8_t * descriptor_ptr,flags;
-  descriptor_ptr = pkt + sizeof(struct rtp_hdr);
-  descriptor_ptr += sizeof(uint32_t);
-  
-  flags = *descriptor_ptr;
+  const uint8_t * hdr_first_octet = (const uint8_t *) payload;  
+  uint8_t vp9flags = *hdr_first_octet;
   //check for L (layering) flag in descriptor 
-  if(flags & (1 << 6))
+  if((vp9flags & (1 << 4)) == 16)
   {
-    uint8_t layers = *(descriptor_ptr + sizeof(uint16_t) + 8);
-    uint8_t sid_value = layers & 14;
+    uint8_t layers = *(hdr_first_octet + 3);
+    uint8_t sid_value = ntohs(layers) & 14;
     sid_value = sid_value >> 1;       //remove D bit from byte
+
     return sid_value;
   }
   else
   {
     //no layering in this packet;
-    return -1;
+    return 0;
   }
 }
 
@@ -326,9 +327,8 @@ static void rtp_packet_received(struct chunkiser_ctx *ctx, int stream_id, uint8_
     info->valid = 0;
   }
 
-  //TODO: set correct layer by reading vp9 header
-    //info->spatial_layer_id = get_vp9_spatial_layer(pkt);
-  info->spatial_layer_id = 0;
+  //set correct layer by reading vp9 header
+  info->spatial_layer_id = get_vp9_spatial_layer(rtp_p);
 }
 
 
@@ -629,9 +629,9 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
     }
   }
   pkt_rcvd = malloc(UDP_MAX_SIZE);
-  //draft; this index is a bit dangerous, re-check the assigment if possible
-  //-1 so if we exit too early we get a segfault. Check if this makes sense
-  buffer_to_use = -1;
+  
+  //by default, put packets into buffer 0 (e.g: RTCP packets)
+  buffer_to_use = 0;
   do {
     status = 0;
     // Check open ports for incoming UDP packets in a round-robin
@@ -641,7 +641,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
 
       int pkt_rcvd_size;
       pkt_rcvd_size = input_get_udp(pkt_rcvd, ctx->fds[i]);
-      printf_log(ctx,2,"Input_get_udp result is : %d",pkt_rcvd_size);
+      printf_log(ctx,4,"Input_get_udp result is : %d",pkt_rcvd_size);
 
       if (pkt_rcvd_size) {
         printf_log(ctx, 2, "Got UDP message of size %d from port id #%d",
@@ -665,18 +665,12 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
             {
               buffer_to_use = 1;
             }
-            else
+            else if(info.spatial_layer_id > 2)
             {
               buffer_to_use = 2;
             }
 
-            if(buffer_to_use < 0)
-            {
-              printf_log(ctx,1,"you gummed up the index, you idiot.");
-              return 0;
-            }
-
-            printf_log(ctx,1,"Buffer to use is %d",buffer_to_use);
+            printf_log(ctx,1,"Layer id value is %d",info.spatial_layer_id);
 
             assert((ctx->max_size - ctx->size[buffer_to_use])
                    >= (UDP_MAX_SIZE + RTP_PAYLOAD_PER_PKT_HEADER_SIZE));
@@ -726,13 +720,13 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           }
         }
         else {  // RTCP packet
-          rtcp_packet_received(ctx, i/2, pkt_rcvd, pkt_rcvd_size);
+          //controllare molto bene dove comincia e dove finisce pkt_rcvd.
+          //la funzione potrebbe ritrovarsi a colpire memoria che non dovrebbe colpire
+          //perchè si aspetta certe dimensioni
+          rtcp_packet_received(ctx, i/2, pkt_rcvd + RTP_PAYLOAD_PER_PKT_HEADER_SIZE, pkt_rcvd_size);
         }
         
-        //NOTE:
-        //we are (probably) passing the wrong arguments to rtp_payolad_per_pkt_header_set.
-        //that's why we get a mem corruption warning and we dump core.
-        rtp_payload_per_pkt_header_set(new_pkt_start, pkt_rcvd_size, i);
+        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, i);
         ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
         if ((ctx->max_size - ctx->size[buffer_to_use])
@@ -749,6 +743,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
 
   if (status == 0 || buffer_to_use < 0) {
     *size = 0;
+    free(pkt_rcvd);
     res = NULL;
   }
   else {

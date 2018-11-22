@@ -57,8 +57,10 @@
 #define RTP_DEFAULT_CHUNK_SIZE 65536
 #define RTP_DEFAULT_MAX_DELAY (1ULL << (TS_SHIFT-2))  // 250 ms
 
+//vp9-related defines
 #define VP9_SID_MASK (16)
 #define VP9_SID_OFFSET (1)
+#define VP9_SPATIAL_LAYERS_MAX (7)
 
 struct rtp_ntp_ts {
   // both in HOST byte order
@@ -90,13 +92,13 @@ struct chunkiser_ctx {
   int fds_len;  // even if "-1"-terminated, save length to make things easier
   struct rtp_stream streams[RTP_STREAMS_NUM_MAX];  // its len is fds_len/2
   // running context (set at chunkising time)
-  uint8_t *buff[3];       //pointers to buffers for spatial layers
-  int size[3];            //sizes of each buffer
+  uint8_t *buff[VP9_SPATIAL_LAYERS_MAX];       //pointers to buffers for spatial layers
+  int size[VP9_SPATIAL_LAYERS_MAX];            //sizes of each buffer
   int next_fd;            // next fd (index in fsd array) to be tried (in a round-robin)
   int counter;            // number of chunks sent
-  uint64_t min_ntp_ts[3];    // ntp timestamp of first packet in chunk
-  uint64_t max_ntp_ts[3];    // ntp timestamp of last packet in chunk
-  int ntp_ts_status[3];      // known (1), yet unkwnown (0) or unknown (-1)
+  uint64_t min_ntp_ts[VP9_SPATIAL_LAYERS_MAX];    // ntp timestamp of first packet in chunk
+  uint64_t max_ntp_ts[VP9_SPATIAL_LAYERS_MAX];    // ntp timestamp of last packet in chunk
+  int ntp_ts_status[VP9_SPATIAL_LAYERS_MAX];      // known (1), yet unkwnown (0) or unknown (-1)
 };
 
 /* Holds relevant information extracted from each RTP packet */
@@ -559,17 +561,14 @@ static struct chunkiser_ctx *rtp_open(const char *fname, int *period, const char
   res->start_time = tv.tv_usec + tv.tv_sec * 1000000ULL;
   res->latest_ts = gettimeofday_in_microseconds();
 
-  res->buff[0] = NULL;
-  res->buff[1] = NULL;
-  res->buff[2] = NULL;
-  res->size[0] = 0;
-  res->size[1] = 0;
-  res->size[2] = 0;
+  //init all different buffers 
+  for(int i = 0; i < VP9_SPATIAL_LAYERS_MAX;i++){
+    res->buff[i] = NULL;
+    res->size[i] = 0;
+    res->ntp_ts_status[i] = 0;
+  }
   res->counter = 0;
   res->next_fd = 0;
-  res->ntp_ts_status[0] = 0;
-  res->ntp_ts_status[1] = 0;
-  res->ntp_ts_status[2] = 0;
   *period = 0;
 
   return res;
@@ -578,11 +577,12 @@ static struct chunkiser_ctx *rtp_open(const char *fname, int *period, const char
 
 static void rtp_close(struct chunkiser_ctx  *ctx) {
   int i;
+  int b;
 
   if (ctx->buff != NULL) {
-    free(ctx->buff[0]);
-    free(ctx->buff[1]);
-    free(ctx->buff[2]);
+    for(b = 0; b < VP9_SPATIAL_LAYERS_MAX;b++){
+      free(ctx->buff[b]);
+    }
   }
   for (i = 0; ctx->fds[i] >= 0; i++) {
     close(ctx->fds[i]);

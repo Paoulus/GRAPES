@@ -656,19 +656,9 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
               fprintf(stderr, "[RTP_LOG] timestamp=%lu size=%d port_id=%d\n", info.ntp_ts, pkt_rcvd_size, i);
             }
 
-            //subdivide the spatial layers (0-7) into 3 buffers. will improve this part a bit
-            if(info.spatial_layer_id == 0)
-            {
-              buffer_to_use = 0;
-            }
-            else if(info.spatial_layer_id <= 2 )
-            {
-              buffer_to_use = 1;
-            }
-            else if(info.spatial_layer_id > 2)
-            {
-              buffer_to_use = 2;
-            }
+            //subdivide the spatial layers (0-7) into 7 buffers. will improve this part a bit
+
+            buffer_to_use = info.spatial_layer_id;
 
             printf_log(ctx,1,"Layer id value is %d",info.spatial_layer_id);
 

@@ -614,18 +614,19 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
   
   *ts = gettimeofday_in_microseconds();
 
-  // Allocate new buffer if needed
-  if (ctx->buff[0] == NULL || ctx->buff[1] == NULL || ctx->buff[2] == NULL) {
-    ctx->buff[0] = malloc(ctx->max_size);
-    ctx->buff[1] = malloc(ctx->max_size);
-    ctx->buff[2] = malloc(ctx->max_size);
-    ctx->ntp_ts_status[0] = 0;
-    ctx->ntp_ts_status[1] = 0;
-    ctx->ntp_ts_status[2] = 0;
-    if (ctx->buff[0] == NULL || ctx->buff[1] == NULL || ctx->buff[2] == NULL) {
-      printf_log(ctx, 0, "Could not alloccate chunk buffer: exiting.");
-      *size = -1;
-      return NULL;
+  // Check every buffer; allocate new buffer if needed
+  for(int buff_ix = 0; buff_ix < VP9_SPATIAL_LAYERS_MAX;buff_ix++)
+  {
+    if(ctx->buff[buff_ix] == NULL)
+    {
+      ctx->buff[buff_ix] = malloc(ctx->max_size);
+      ctx->ntp_ts_status[buff_ix] = 0;
+      if(ctx->buff[buff_ix] == NULL)
+      {
+       printf_log(ctx, 0, "Could not alloccate chunk buffer: exiting.");
+       *size = -1;
+       return NULL;
+      }
     }
   }
   pkt_rcvd = malloc(UDP_MAX_SIZE);

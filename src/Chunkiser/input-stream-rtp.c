@@ -60,7 +60,7 @@
 //vp9-related defines
 #define VP9_SID_MASK (16)
 #define VP9_SID_OFFSET (1)
-#define VP9_SPATIAL_LAYERS_MAX (7)
+#define VP9_SPATIAL_LAYERS_MAX (8)
 
 struct rtp_ntp_ts {
   // both in HOST byte order
@@ -262,17 +262,40 @@ static int rtplib_init(struct chunkiser_ctx *ctx) {
   return 0;
 }
 
-//read RTP payload and return 
-//SID value from VP9 payolad descriptor
-uint8_t get_vp9_spatial_layer(const void *payload)
+// read RTP payload and return 
+// SID value from VP9 payolad descriptor
+static uint8_t get_vp9_spatial_layer(const void *payload)
 {
+  int L,I,M = 0;
+  int offset = 1;
+
   const uint8_t * hdr_first_octet = (const uint8_t *) payload;  
-  uint8_t vp9flags = *hdr_first_octet;
-  //check for L (layering) flag in descriptor 
-  if((vp9flags & (1 << 4)) == 16)
+  uint8_t hdr_flags = *hdr_first_octet;
+  uint8_t layers,sid_value = 0;
+
+  L = ((hdr_flags & 0x20));
+  I = ((hdr_flags & 0x80));
+  M = 0;
+
+  if(I != 0)
   {
-    uint8_t layers = *(hdr_first_octet + 3);
-    uint8_t sid_value = ntohs(layers) & 14;
+    const uint8_t * hdr_second_octed = (const uint8_t *) (hdr_first_octet + 1);
+    M = (*(hdr_second_octed) & 0x80);
+  } 
+
+  if(L > 0)
+  {
+    if(I > 0)
+    {
+      offset++;
+    }
+
+    if(M > 0)
+    {
+      offset++;
+    }
+    layers = *(hdr_first_octet + offset);
+    sid_value = layers & 14;
     sid_value = sid_value >> 1;       //remove D bit from byte
 
     return sid_value;
@@ -642,8 +665,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
 
       int pkt_rcvd_size;
       pkt_rcvd_size = input_get_udp(pkt_rcvd, ctx->fds[i]);
-      printf_log(ctx,4,"Input_get_udp result is : %d",pkt_rcvd_size);
-
+     
       if (pkt_rcvd_size) {
         printf_log(ctx, 2, "Got UDP message of size %d from port id #%d",
                    pkt_rcvd_size, i);
@@ -717,7 +739,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           rtcp_packet_received(ctx, i/2, pkt_rcvd + RTP_PAYLOAD_PER_PKT_HEADER_SIZE, pkt_rcvd_size);
         }
         
-        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, i);
+        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, buffer_to_use);
         ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
         if ((ctx->max_size - ctx->size[buffer_to_use])

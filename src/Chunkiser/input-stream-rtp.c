@@ -268,10 +268,10 @@ static uint8_t get_vp9_spatial_layer(const void *payload)
 {
   int L,I,M = 0;
   int offset = 1;
+  uint8_t layers,sid_value,tid_value = 0;
 
   const uint8_t * hdr_first_octet = (const uint8_t *) payload;  
   uint8_t hdr_flags = *hdr_first_octet;
-  uint8_t layers,sid_value = 0;
 
   L = ((hdr_flags & 0x20));
   I = ((hdr_flags & 0x80));
@@ -297,6 +297,9 @@ static uint8_t get_vp9_spatial_layer(const void *payload)
     layers = *(hdr_first_octet + offset);
     sid_value = layers & 14;
     sid_value = sid_value >> 1;       //remove D bit from byte
+
+    tid_value = layers & 240;
+    tid_value = tid_value >> 5;
 
     return sid_value;
   }

@@ -301,6 +301,8 @@ static uint8_t get_vp9_spatial_layer(const void *payload)
     tid_value = layers & 240;
     tid_value = tid_value >> 5;
 
+    // EF THIS
+    //return tid_value;
     return sid_value;
   }
   else
@@ -682,9 +684,10 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
               fprintf(stderr, "[RTP_LOG] timestamp=%lu size=%d port_id=%d\n", info.ntp_ts, pkt_rcvd_size, i);
             }
 
-            //subdivide the spatial layers (0-7) into 7 buffers. will improve this part a bit
+            // the nth layer has to go to use the (nth * 2) fd, or we'll start sending video stuff to the RTCP stream
+            // also, avoid using the first two layer, or we'll send audio and video toghether
 
-            buffer_to_use = info.spatial_layer_id;
+            buffer_to_use = 2 + (info.spatial_layer_id * 2);
 
             printf_log(ctx,1,"Layer id value is %d",info.spatial_layer_id);
 
@@ -736,9 +739,6 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           }
         }
         else {  // RTCP packet
-          //controllare molto bene dove comincia e dove finisce pkt_rcvd.
-          //la funzione potrebbe ritrovarsi a colpire memoria che non dovrebbe colpire
-          //perchè si aspetta certe dimensioni
           rtcp_packet_received(ctx, i/2, pkt_rcvd + RTP_PAYLOAD_PER_PKT_HEADER_SIZE, pkt_rcvd_size);
         }
         
@@ -770,7 +770,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
     ctx->buff[buffer_to_use] = NULL;
     ctx->size[buffer_to_use] = 0;
     free(pkt_rcvd);           //free area used as temporary storage for vp9 frames
-    printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli", *size, *ts);
+    printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli, buffer to use: %i", *size, *ts, buffer_to_use);
   }
 
   return res;

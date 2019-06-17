@@ -110,10 +110,14 @@ static inline int rtp_ports_parse(const struct tag *cfg_tags,
       ports[1] = ports[0] + 1;
       ports[2] = ports[1] + 1;
       ports[3] = ports[2] + 1;
+      ports[4] = ports[3] + 1;
+      ports[5] = ports[4] + 1;
+      ports[6] = ports[5] + 1;
+      ports[7] = ports[6] + 1;
       if (video_stream_id != NULL) {
         *video_stream_id = 1;
       }
-      i += 4;
+      i += 8;
     }
   }
   // No port can be negative

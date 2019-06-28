@@ -707,6 +707,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
               // packet with unknown ts, ignore all timestamps
               ctx->ntp_ts_status[buffer_to_use] = -1;
             }
+            printf_log(ctx,2,"ntp_ts status for current buffer is %i",ctx->ntp_ts_status[buffer_to_use]);
             if (ctx->ntp_ts_status[buffer_to_use] >= 0) {
               switch (ctx->ntp_ts_status[buffer_to_use]) {
               case 0:
@@ -719,17 +720,24 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
                 ctx->max_ntp_ts[buffer_to_use] = ts_max(ctx->max_ntp_ts[buffer_to_use], info.ntp_ts);
                 break;
               }
+              printf_log(ctx,2," Delta time is: %.0f",(ctx->max_ntp_ts - ctx->min_ntp_ts) * 1000.0 / (1ULL << TS_SHIFT));
               if ((ctx->max_ntp_ts[buffer_to_use] - ctx->min_ntp_ts[buffer_to_use]) >= ctx->max_delay ) {
                 printf_log(ctx, 2, "  Max delay reached: %.0f over %.0f ms",
                            (ctx->max_ntp_ts - ctx->min_ntp_ts) * 1000.0 / (1ULL << TS_SHIFT),
                            ctx->max_delay * 1000.0 / (1ULL << TS_SHIFT));
-                status = ((status > 1) ? status : 1); // status = max(status, 1)
+                status = ((status > 1) ? status : 1); // status = max(status, 1); 
               }
 
             } else  {// consider last generated chunk timestamp
-              fprintf(stderr, "[DEBUG] now %"PRIu64", then %"PRIu64", maxdelay %f\n", *ts, ctx->latest_ts, ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
+              //fprintf(stderr, "[DEBUG] now %"PRIu64", then %"PRIu64", maxdelay %f\n", *current_timestamp, ctx->latest_ts, ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
               if ((*current_timestamp - ctx->latest_ts) >= (ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT)))
+              {
                 status = ((status > 1) ? status : 1); 
+                printf_log(ctx,4,"  Produced chunk with debug code. Delta time was %f, size is %i, maxdelay is %f\n",
+                  (*current_timestamp - ctx->latest_ts),
+                  ctx->size[buffer_to_use],
+                  ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
+              }
             }
 
             // Marker bit semantic for video stream in rfc3551

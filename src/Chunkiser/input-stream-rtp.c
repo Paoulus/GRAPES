@@ -629,7 +629,7 @@ static void rtp_close(struct chunkiser_ctx  *ctx) {
 
   In case of error, returns NULL and size=-1
  */
-static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint64_t *ts,
+static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint64_t *current_timestamp,
                                       void **attr, int *attr_size) {
   int status;  // -1: buffer full, send now
                //  0: Go on, do not send;
@@ -640,7 +640,8 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
   uint8_t *pkt_rcvd;
   uint8_t*new_pkt_start;
   
-  *ts = gettimeofday_in_microseconds();
+  // previous value is ignored, we get a new one every time we invoke the function
+  *current_timestamp = gettimeofday_in_microseconds();
 
   // Check every buffer; allocate new buffer if needed
   for(int buff_ix = 0; buff_ix < VP9_SPATIAL_LAYERS_MAX;buff_ix++)
@@ -659,7 +660,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
   }
   pkt_rcvd = malloc(UDP_MAX_SIZE);
   
-  //by default, put packets into buffer 0 (e.g: RTCP packets)
+  //by default, put packets into buffer 0 
   buffer_to_use = 0;
   do {
     status = 0;
@@ -686,8 +687,8 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
 
             // the nth layer has to go to use the (nth * 2) fd, or we'll start sending video stuff to the RTCP stream
             // also, avoid using the first two layer, or we'll send audio and video toghether
-
-            buffer_to_use = 2 + (info.spatial_layer_id * 2);
+            // WHAT WAS I THINKING
+            //buffer_to_use = 2 + (info.spatial_layer_id * 2);
 
             printf_log(ctx,1,"Layer id value is %d",info.spatial_layer_id);
 
@@ -726,8 +727,8 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
               }
 
             } else  {// consider last generated chunk timestamp
-              //fprintf(stderr, "[DEBUG] now %"PRIu64", then %"PRIu64", maxdelay %f\n", *ts, ctx->latest_ts, ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
-              if ((*ts - ctx->latest_ts) >= (ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT)))
+              fprintf(stderr, "[DEBUG] now %"PRIu64", then %"PRIu64", maxdelay %f\n", *ts, ctx->latest_ts, ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT));
+              if ((*current_timestamp - ctx->latest_ts) >= (ctx->max_delay * 1000000.0 / (1ULL << TS_SHIFT)))
                 status = ((status > 1) ? status : 1); 
             }
 
@@ -742,7 +743,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           rtcp_packet_received(ctx, i/2, pkt_rcvd + RTP_PAYLOAD_PER_PKT_HEADER_SIZE, pkt_rcvd_size);
         }
         
-        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size, buffer_to_use);
+        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size,i);
         ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
         if ((ctx->max_size - ctx->size[buffer_to_use])
@@ -766,11 +767,11 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
     res = ctx->buff[buffer_to_use];
     *size = ctx->size[buffer_to_use];
     ctx->counter++;
-    ctx->latest_ts = *ts;
+    ctx->latest_ts = *current_timestamp;
     ctx->buff[buffer_to_use] = NULL;
     ctx->size[buffer_to_use] = 0;
     free(pkt_rcvd);           //free area used as temporary storage for vp9 frames
-    printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli, buffer to use: %i", *size, *ts, buffer_to_use);
+    printf_log(ctx, 2, "Chunk created: size %i, timestamp %lli, buffer to use: %i", *size, *current_timestamp, buffer_to_use);
   }
 
   return res;

@@ -181,6 +181,11 @@ static void rtp_write(struct dechunkiser_ctx *ctx, int id, uint8_t *data, int si
     printf_log(ctx, 2,
                "sending packet of size %i from port id #%i to port %i",
                psize, stream, ctx->ports[stream]);
+    // ugly hack to build the separate svc streams into one
+    if(stream == 4)
+    {
+      stream = 2;
+    }
     packet_write(ctx->outfd, ctx->ip, ctx->ports[stream], data, psize);
     data += psize;
   }

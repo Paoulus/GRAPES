@@ -106,6 +106,7 @@ struct rtp_info {
   uint16_t valid;
   uint16_t marker;
   uint64_t ntp_ts;
+  uint64_t rtp_ts;
   uint8_t spatial_layer_id;
 };
 
@@ -351,6 +352,7 @@ static void rtp_packet_received(struct chunkiser_ctx *ctx, int stream_id, uint8_
     info->marker = RTP_HDR_M(rtp_h);
 #endif
     info->ntp_ts = rtptontp(ctx, stream, ntohl(rtp_h->ts));
+    info->rtp_ts = ntohl(rtp_h->ts);
   }
   else {
     printf_log(ctx, 1, "Warning: got invalid RTP packet (forwarding anyway).");
@@ -688,7 +690,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
             // the nth layer has to go to use the (nth * 2) fd, or we'll start sending video stuff to the RTCP stream
             // also, avoid using the first two layer, or we'll send audio and video toghether
             // WHAT WAS I THINKING
-            //buffer_to_use = 2 + (info.spatial_layer_id * 2);
+            buffer_to_use = 2 + (info.spatial_layer_id * 2);
 
             printf_log(ctx,1,"Layer id value is %d",info.spatial_layer_id);
 
@@ -751,7 +753,7 @@ static uint8_t *rtp_chunkise(struct chunkiser_ctx *ctx, int id, int *size, uint6
           rtcp_packet_received(ctx, i/2, pkt_rcvd + RTP_PAYLOAD_PER_PKT_HEADER_SIZE, pkt_rcvd_size);
         }
         
-        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size,i);
+        rtp_payload_per_pkt_header_set(ctx->buff[buffer_to_use] + ctx->size[buffer_to_use], pkt_rcvd_size,buffer_to_use);
         ctx->size[buffer_to_use] += pkt_rcvd_size + RTP_PAYLOAD_PER_PKT_HEADER_SIZE;
 
         if ((ctx->max_size - ctx->size[buffer_to_use])
